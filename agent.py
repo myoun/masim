@@ -58,6 +58,7 @@ class State(TypedDict):
     output_path: str | None
     max_retry: int
     retry: int
+    session_id: str
 
 llms = {
     "nano": init_chat_model("openai:gpt-5-nano"),
@@ -151,8 +152,9 @@ def code_runner(state: State):
                 environment={"PYTHONUNBUFFERED": "1"},
             )
             stdout = logs.decode("utf-8")
-            
-            output_file = (output_dir/"videos"/"scene"/"1080p60"/"output.mp4").absolute()
+
+            filename_without_extension = filename.split(".")[0]
+            output_file = (output_dir/"videos"/filename_without_extension/"1080p60"/"output.mp4").absolute()
             if output_file.exists():
                 logger.info(f"Manim video sucessfully saved at {output_file}!")
                 return {"stdout": stdout, "stderr": "", "output_path": str(output_file)}
@@ -178,8 +180,8 @@ def code_analyzer(state: State):
 
 # ======== Conditional  ==========
 
-def is_code_wrong(state: State):
-    return "YES" if state["need_fix"] and state["retry"] <= state["max_retry"] else "NO"
+def code_analyzer_router(state: State):
+    return "FIX" if state["need_fix"] and state["retry"] <= state["max_retry"] else "END"
 
 # ====================
 
@@ -196,7 +198,7 @@ graph.add_edge("goal_extractor", "planning_agent")
 graph.add_edge("planning_agent", "coding_agent")
 graph.add_edge("coding_agent", "code_runner")
 graph.add_edge("code_runner", "code_analyzer")
-graph.add_conditional_edges("code_analyzer", is_code_wrong, { "YES": "coding_agent", "NO": END })
+graph.add_conditional_edges("code_analyzer", code_analyzer_router, { "FIX": "coding_agent", "END": END })
 
 checkpointer = InMemorySaver()
 thread_id = str(uuid.uuid4())
@@ -206,7 +208,7 @@ app = graph.compile(checkpointer=checkpointer).with_config(config=config)
 
 docker_prerequirements(build_image=False)
 
-data = State(messages=[HumanMessage("경사하강법 설명해줘")], max_retry=3, retry=0) # type: ignore
+data = State(session_id=thread_id,messages=[HumanMessage("외계행성계 탐사 방법 중 시선속도를 이용해서 찾는 방법(도플러 효과 이용)을 애니메이션으로 보여줘.")], max_retry=3, retry=0) # type: ignore
 
 for event in app.stream(
     data,
