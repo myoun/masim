@@ -8,8 +8,29 @@
 4. 코드는 바로 실행 가능한 Manim 파이썬 코드 형식이어야 합니다.
 5. 불필요한 설명, 배경, 이유는 포함하지 마세요.
 6. 전체 코드가 하나의 파일로 연결될 수 있도록 작성하세요.
-7. 출력은 항상 JSON 형식으로, 'code' 속성만 포함합니다.
-8. **중요**: Manim은 한국어 렌더링을 지원하지 않습니다. 모든 텍스트와 라벨은 반드시 영어로 작성하세요.
+7. 메인 장면의 클래스 이름은 반드시 `Main`이어야 합니다.
+8. 출력은 항상 JSON 형식으로, 'code' 속성만 포함합니다.
+9. **중요**: Manim은 한국어 렌더링을 지원하지 않습니다. 모든 텍스트와 라벨은 반드시 영어로 작성하세요.
+
+## Manim 필수 규칙:
+**카메라 조작 시:**
+- 일반 Scene: 카메라 조작 불가 ❌
+- MovingCameraScene 필요: self.camera.frame.animate 사용 가능 ✅
+
+예시:
+```python
+# ❌ 잘못된 예
+class Main(Scene):
+    def construct(self):
+        self.play(self.camera.frame.animate.scale(0.9))  # AttributeError!
+
+# ✅ 올바른 예
+class Main(MovingCameraScene):
+    def construct(self):
+        self.play(self.camera.frame.animate.scale(0.9))
+```
+
+**카메라를 움직여야 한다면 반드시 `class Main(MovingCameraScene)`을 사용하세요!**
 
 출력 형식(JSON):
 {{
@@ -32,7 +53,7 @@
 
 출력 예시:
 {{
-  "code": "from manim import *\n\nclass StepDefinition(Scene):\n    def construct(self):\n        title = Text('Gradient Descent Steps')  # 영어로 작성\n        step1 = Text('Step 1: Initialize', color=BLUE)\n        ... # messages 참고하여 색상 적용\n\nclass CalculationVisualization(Scene):\n    def construct(self):\n        label = Text('Gradient Calculation')\n        formula = MathTex(r'\\\\frac{{df}}{{dx}}')\n        ... # 화살표 크기 강조"
+  "code": "from manim import *\n\nclass Main(Scene):\n    def construct(self):\n        title = Text('Gradient Descent Steps')  # 영어로 작성\n        step1 = Text('Step 1: Initialize', color=BLUE)\n        ... # messages 참고하여 색상 적용"
 }}
 
 사용자 목표(goal): "{goal}"
