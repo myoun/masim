@@ -57,5 +57,10 @@ USER runner
 # Python 의존성 설치
 RUN uv sync --no-cache
 
+# Manim 결과 출력용 폴더 생성
+RUN mkdir -p ./media/Tex \
+    ./media/videos \
+    ./media/images
+
 # 작업 디렉터리를 runner가 쓸 수 있도록 보장
 WORKDIR /sandbox

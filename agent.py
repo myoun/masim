@@ -19,6 +19,8 @@ import docker.errors
 import tempfile
 import os
 
+from pathlib import Path
+
 dotenv.load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[RichHandler()])
@@ -40,7 +42,7 @@ class State(TypedDict):
     goal: str
     codes: Annotated[list[str], operator.add]
     output: str
-    error: str
+    stderr: str
     analysis: list[CodeAnalysis]
     need_fix: bool
 
@@ -51,10 +53,11 @@ llms = {
 
 docker_client = docker.from_env()
 
-def docker_prerequirements():
-    logger.info("Building Docker Image...")
-    docker_client.images.build(path="./sandbox", tag="sandbox:latest", encoding="utf8")
-    logger.info("...Done!")
+def docker_prerequirements(build_image: bool = False):
+    if build_image:
+        logger.info("Building Docker Image...")
+        docker_client.images.build(path="./sandbox", tag="sandbox:latest", encoding="utf8")
+        logger.info("...Done!")
 
 # ======================
 
@@ -95,7 +98,7 @@ def planing_agent(state: State):
 def coding_agnet(state: State):
     if "need_fix" in state and state["need_fix"]:
             template = PromptTemplate.from_file("./prompts/coding_agent_fix.md", encoding="utf8")
-            value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"], "code": state["codes"][-1], "output": state["output"], "error": state["error"]})
+            value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"], "code": state["codes"][-1], "output": state["output"], "error": state["stderr"]})
     else:
         template = PromptTemplate.from_file("./prompts/coding_agent.md", encoding="utf8")
         value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"]})
@@ -114,31 +117,37 @@ def code_runner(state: State):
         filename = os.path.basename(f.name)
 
         try:
+            output_dir = Path.cwd() / "output"
+            output_dir.mkdir(exist_ok=True)
+            
             logs = docker_client.containers.run(
                 image="sandbox:latest",
                 command=f"uv run manim {filename} Main",
-                volumes={f.name: {"bind": f"/sandbox/{filename}", "mode": "ro"}},
+                volumes={
+                    str(Path(f.name).absolute()): {"bind": f"/sandbox/{filename}", "mode": "ro"},
+                    str(output_dir.absolute()): {"bind": "/sandbox/media", "mode": "rw"}
+                },
                 working_dir="/sandbox",
                 network_disabled=False,
-                mem_limit="512m",
+                mem_limit="8g",
                 stderr=True,
                 stdout=True,
-                remove=True,
+                remove=False,
                 detach=False,
                 user="runner",
                 environment={"PYTHONUNBUFFERED": "1"},
             )
-            output = logs.decode("utf8")
+            output = logs.decode("utf-8")
 
-            return {"output": output, "error": None}
+            return {"output": output, "stderr": ""}
         except docker.errors.ContainerError as e:
-            return {"output": "", "error": e.stderr}
+            return {"output": "", "stderr": e.stderr.decode("utf-8")} # type: ignore
         except Exception as e:
-            return {"output": "", "error": str(e)}
+            return {"output": "", "stderr": str(e)}
 
 def code_analyzer(state: State):
     template = PromptTemplate.from_file("./prompts/code_analyzer.md", encoding="utf8")
-    value = template.invoke({"code": state["codes"][-1], "output": state["output"], "error": state["error"]})
+    value = template.invoke({"code": state["codes"][-1], "output": state["output"], "stderr": state["stderr"]})
 
     llm = llms["mini"].with_structured_output(method="json_mode", schema=CodeAnalyzerResponse)
     response: CodeAnalyzerResponse = llm.invoke(value) # type: ignore
@@ -172,9 +181,9 @@ graph.add_conditional_edges("code_analyzer", is_code_wrong, { "YES": "coding_age
 
 app = graph.compile()
 
-# docker_prerequirements()
+docker_prerequirements(build_image=False)
 
-data = State(messages=[HumanMessage("원에 내접한 사각형 그려줘")]) # type: ignore
+data = State(messages=[HumanMessage("경사하강법 설명해줘")]) # type: ignore
 
 for event  in app.stream(
     data,

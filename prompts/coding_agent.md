@@ -9,6 +9,7 @@
 5. 불필요한 설명, 배경, 이유는 포함하지 마세요.
 6. 전체 코드가 하나의 파일로 연결될 수 있도록 작성하세요.
 7. 출력은 항상 JSON 형식으로, 'code' 속성만 포함합니다.
+8. **중요**: Manim은 한국어 렌더링을 지원하지 않습니다. 모든 텍스트와 라벨은 반드시 영어로 작성하세요.
 
 출력 형식(JSON):
 {{
@@ -31,7 +32,7 @@
 
 출력 예시:
 {{
-  "code": "from manim import *\n\nclass StepDefinition(Scene):\n    def construct(self):\n        ... # messages 참고하여 색상 적용\n\nclass CalculationVisualization(Scene):\n    def construct(self):\n        ... # 화살표 크기 강조"
+  "code": "from manim import *\n\nclass StepDefinition(Scene):\n    def construct(self):\n        title = Text('Gradient Descent Steps')  # 영어로 작성\n        step1 = Text('Step 1: Initialize', color=BLUE)\n        ... # messages 참고하여 색상 적용\n\nclass CalculationVisualization(Scene):\n    def construct(self):\n        label = Text('Gradient Calculation')\n        formula = MathTex(r'\\\\frac{{df}}{{dx}}')\n        ... # 화살표 크기 강조"
 }}
 
 사용자 목표(goal): "{goal}"
