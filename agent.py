@@ -73,6 +73,9 @@ def docker_prerequirements(build_image: bool = False):
         docker_client.images.build(path="./sandbox", tag="sandbox:latest", encoding="utf8")
         logger.info("...Done!")
 
+def clean_docker_log(log: str) -> str:
+    return "\n".join(map(lambda line: line.strip(), filter(lambda line: not('\r' in line and ('%|' in line or 'it/s]' in line)), log.split("\n"))))
+
 # ======================
 
 class GoalExtractorResponse(BaseModel):
@@ -151,7 +154,8 @@ def code_runner(state: State):
                 user="runner",
                 environment={"PYTHONUNBUFFERED": "1"},
             )
-            stdout = logs.decode("utf-8")
+            stdout_full = logs.decode("utf-8")
+            stdout = clean_docker_log(stdout_full)
 
             filename_without_extension = filename.split(".")[0]
             output_file = (output_dir/"videos"/filename_without_extension/"1080p60"/"output.mp4").absolute()
