@@ -17,3 +17,5 @@ logs/
 output/
 
 data/
+
+.ruff_cache/

@@ -24,6 +24,7 @@ import docker.errors
 import tempfile
 import os
 import uuid
+from enum import Enum
 
 from pathlib import Path
 
@@ -37,6 +38,19 @@ file_handler = logging.FileHandler(f"logs/{datetime.now().strftime('%Y%m%d_%H%M%
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", handlers=[RichHandler(), file_handler])
 logger = logging.getLogger("Masim")
+
+class Interruption(Enum):
+    PLAN_REVIEW = "plan_review"
+    HUMAN_REVIEW_CONFIRM = "human_review_confirm"
+    HUMAN_REVIEW_COMMENT = "human_review_comment"
+
+class AgentState(Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    INTERRUPTED = "INTERRUPTED"
+    PLAN_REVIEW = "PLAN_REVIEW"
+    HUMAN_REVIEW_CONFIRM = "HUMAN_REVIEW_CONFIRM"
+    HUMAN_REVIEW_COMMENT = "HUMAN_REVIEW_COMMENT"
 
 # ===============
 
@@ -62,6 +76,7 @@ class State(TypedDict):
     retry: int
     session_id: str
     human_request: str
+    plan_feedback: str
 
 llms = {
     "nano": init_chat_model("openai:gpt-5-nano"),
@@ -115,6 +130,20 @@ def planing_agent(state: State):
 
     return { "plans" : plans }
 
+def plan_review(state: State):
+    feedback = interrupt(Interruption.PLAN_REVIEW)
+    return { "plan_feedback": feedback }
+
+def plan_reviser(state: State):
+    template = PromptTemplate.from_file("./prompts/plan_reviser.md", encoding="utf8")
+    value = template.invoke({"goal": state["goal"], "plans": state["plans"], "feedback": state["plan_feedback"]})
+
+    llm = llms["nano"].with_structured_output(method="json_mode", schema=PlanningAgentResponse)
+    response: PlanningAgentResponse = llm.invoke(value) # type: ignore
+    plans = response.plans
+
+    return { "plans": plans }
+
 def coding_agnet(state: State):
     template = PromptTemplate.from_file("./prompts/coding_agent.md", encoding="utf8")
     value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"]})
@@ -148,7 +177,7 @@ def code_runner(state: State):
                 mem_limit="8g",
                 stderr=True,
                 stdout=True,
-                remove=False,
+                remove=True,
                 detach=False,
                 user="runner",
                 environment={"PYTHONUNBUFFERED": "1"},
@@ -159,7 +188,6 @@ def code_runner(state: State):
             filename_without_extension = filename.split(".")[0]
             output_file = (output_dir/"videos"/filename_without_extension/"1080p60"/"output.mp4").absolute()
             if output_file.exists():
-                logger.info(f"Manim video sucessfully saved at {output_file}!")
                 return {"stdout": stdout, "stderr": "", "output_path": str(output_file)}
             else:
                 return {"stdout": stdout, "stderr": "", "output_path": None}
@@ -183,14 +211,14 @@ def code_analyzer(state: State):
 
 def human_review(state: State):
     while True:
-        need_fix = interrupt("수정사항이 있습니까? (Y/N)")
+        need_fix = interrupt(Interruption.HUMAN_REVIEW_CONFIRM)
 
         if need_fix not in ["Y", "N"]:
             continue
         elif need_fix == "N":
             return { "need_fix": False }
         else:
-            request = interrupt("수정 사항을 작성해주세요")
+            request = interrupt(Interruption.HUMAN_REVIEW_COMMENT)
             return { "human_request": request, "need_fix": True }
         
 def fix_planner(state: State):
@@ -218,12 +246,17 @@ def fix_coding_agent(state: State):
 def code_analyzer_router(state: State):
     return "FIX" if state["need_fix"] and state["retry"] <= state["max_retry"] else "GOOD"
 
+def plan_feedback_router(state: State):
+    return "REVISE" if state.get("plan_feedback") else "APPROVE"
+
 # ====================
 
 graph = StateGraph(State)
 
 graph.add_node("goal_extractor", goal_extractor)
 graph.add_node("planning_agent", planing_agent)
+graph.add_node("plan_review", plan_review)
+graph.add_node("plan_reviser", plan_reviser)
 graph.add_node("coding_agent", coding_agnet)
 graph.add_node("code_runner", code_runner)
 graph.add_node("code_analyzer", code_analyzer)
@@ -233,7 +266,9 @@ graph.add_node("fix_coding_agent", fix_coding_agent)
 
 graph.add_edge(START, "goal_extractor")
 graph.add_edge("goal_extractor", "planning_agent")
-graph.add_edge("planning_agent", "coding_agent")
+graph.add_edge("planning_agent", "plan_review")
+graph.add_conditional_edges("plan_review", plan_feedback_router, { "REVISE": "plan_reviser", "APPROVE": "coding_agent" })
+graph.add_edge("plan_reviser", "plan_review")
 graph.add_edge("coding_agent", "code_runner")
 graph.add_edge("code_runner", "code_analyzer")
 graph.add_conditional_edges("code_analyzer", code_analyzer_router, { "FIX": "fix_planner", "GOOD": "human_review" })
@@ -247,22 +282,23 @@ config: RunnableConfig = {"run_name": "Masim Agent", "configurable": {"thread_id
 
 app = graph.compile(checkpointer=checkpointer).with_config(config=config)
 
-with open("graph.png", "wb") as f:
-    f.write(app.get_graph().draw_mermaid_png())
+if __name__ == "__main__":
+    with open("graph.png", "wb") as f:
+        f.write(app.get_graph().draw_mermaid_png())
 
-docker_prerequirements(build_image=False)
+    docker_prerequirements(build_image=False)
 
-data = State(session_id=thread_id,messages=[HumanMessage("원의 넓이 공식을 평행사변형을 이용해서 유도하는 애니메이션 제작")], max_retry=5, retry=0) # type: ignore
+    data = State(session_id=thread_id,messages=[HumanMessage("원의 넓이 공식을 평행사변형을 이용해서 유도하는 애니메이션 제작")], max_retry=5, retry=0) # type: ignore
 
-result = app.invoke(data)
+    result = app.invoke(data)
 
-while True:
-    q: list = result["__interrupt__"]
+    while True:
+        q: list = result["__interrupt__"]
 
-    if len(q) == 0:
-        break
-    
-    i = q.pop(0)
-    res = Prompt.ask(i.value)
+        if len(q) == 0:
+            break
+        
+        i = q.pop(0)
+        res = Prompt.ask(i.value)
 
-    result = app.invoke(Command(resume=res))
+        result = app.invoke(Command(resume=res))
