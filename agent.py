@@ -3,6 +3,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import interrupt, Command
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableConfig
@@ -12,6 +13,7 @@ from langchain.messages import HumanMessage
 from pydantic import BaseModel
 
 from rich.logging import RichHandler
+from rich.prompt import Prompt
 from datetime import datetime
 import logging
 
@@ -22,6 +24,7 @@ import docker.errors
 import tempfile
 import os
 import uuid
+from enum import Enum
 
 from pathlib import Path
 
@@ -35,6 +38,19 @@ file_handler = logging.FileHandler(f"logs/{datetime.now().strftime('%Y%m%d_%H%M%
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", handlers=[RichHandler(), file_handler])
 logger = logging.getLogger("Masim")
+
+class Interruption(Enum):
+    PLAN_REVIEW = "plan_review"
+    HUMAN_REVIEW_CONFIRM = "human_review_confirm"
+    HUMAN_REVIEW_COMMENT = "human_review_comment"
+
+class AgentState(Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    INTERRUPTED = "INTERRUPTED"
+    PLAN_REVIEW = "PLAN_REVIEW"
+    HUMAN_REVIEW_CONFIRM = "HUMAN_REVIEW_CONFIRM"
+    HUMAN_REVIEW_COMMENT = "HUMAN_REVIEW_COMMENT"
 
 # ===============
 
@@ -59,6 +75,8 @@ class State(TypedDict):
     max_retry: int
     retry: int
     session_id: str
+    human_request: str
+    plan_feedback: str
 
 llms = {
     "nano": init_chat_model("openai:gpt-5-nano"),
@@ -112,13 +130,23 @@ def planing_agent(state: State):
 
     return { "plans" : plans }
 
+def plan_review(state: State):
+    feedback = interrupt(Interruption.PLAN_REVIEW)
+    return { "plan_feedback": feedback }
+
+def plan_reviser(state: State):
+    template = PromptTemplate.from_file("./prompts/plan_reviser.md", encoding="utf8")
+    value = template.invoke({"goal": state["goal"], "plans": state["plans"], "feedback": state["plan_feedback"]})
+
+    llm = llms["nano"].with_structured_output(method="json_mode", schema=PlanningAgentResponse)
+    response: PlanningAgentResponse = llm.invoke(value) # type: ignore
+    plans = response.plans
+
+    return { "plans": plans }
+
 def coding_agnet(state: State):
-    if "need_fix" in state and state["need_fix"]:
-            template = PromptTemplate.from_file("./prompts/coding_agent_fix.md", encoding="utf8")
-            value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"], "code": state["codes"][-1], "stdout": state["stdout"], "stderr": state["stderr"]})
-    else:
-        template = PromptTemplate.from_file("./prompts/coding_agent.md", encoding="utf8")
-        value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"]})
+    template = PromptTemplate.from_file("./prompts/coding_agent.md", encoding="utf8")
+    value = template.invoke({"messages": state["messages"], "goal": state["goal"], "plans": state["plans"]})
 
     llm = llms["mini"].with_structured_output(method="json_mode", schema=CodingAgentResponse)
     response: CodingAgentResponse = llm.invoke(value) # type: ignore
@@ -149,7 +177,7 @@ def code_runner(state: State):
                 mem_limit="8g",
                 stderr=True,
                 stdout=True,
-                remove=False,
+                remove=True,
                 detach=False,
                 user="runner",
                 environment={"PYTHONUNBUFFERED": "1"},
@@ -160,7 +188,6 @@ def code_runner(state: State):
             filename_without_extension = filename.split(".")[0]
             output_file = (output_dir/"videos"/filename_without_extension/"1080p60"/"output.mp4").absolute()
             if output_file.exists():
-                logger.info(f"Manim video sucessfully saved at {output_file}!")
                 return {"stdout": stdout, "stderr": "", "output_path": str(output_file)}
             else:
                 return {"stdout": stdout, "stderr": "", "output_path": None}
@@ -182,10 +209,45 @@ def code_analyzer(state: State):
     
     return { "need_fix": need_fix, "analysis": analysis, "retry": retry }
 
+def human_review(state: State):
+    while True:
+        need_fix = interrupt(Interruption.HUMAN_REVIEW_CONFIRM)
+
+        if need_fix not in ["Y", "N"]:
+            continue
+        elif need_fix == "N":
+            return { "need_fix": False }
+        else:
+            request = interrupt(Interruption.HUMAN_REVIEW_COMMENT)
+            return { "human_request": request, "need_fix": True }
+        
+def fix_planner(state: State):
+    template = PromptTemplate.from_file("./prompts/fix_planner.md", encoding="utf8")
+    value = template.invoke({"code": state["codes"][-1], "human_request": state.get("human_request", "없음"), "analysis": state["analysis"]})
+
+    llm = llms["nano"].with_structured_output(method="json_mode", schema=PlanningAgentResponse)
+    response: PlanningAgentResponse = llm.invoke(value) # type: ignore
+    plans = response.plans
+
+    return { "plans": plans }
+
+def fix_coding_agent(state: State):
+    template = PromptTemplate.from_file("./prompts/coding_agent_fix.md", encoding="utf8")
+    value = template.invoke({"plans": state["plans"], "code": state["codes"][-1]})
+
+    llm = llms["mini"].with_structured_output(method="json_mode", schema=CodingAgentResponse)
+    response: CodingAgentResponse = llm.invoke(value) # type: ignore
+    code = response.code
+
+    return { "codes" : [code] }
+
 # ======== Conditional  ==========
 
 def code_analyzer_router(state: State):
-    return "FIX" if state["need_fix"] and state["retry"] <= state["max_retry"] else "END"
+    return "FIX" if state["need_fix"] and state["retry"] <= state["max_retry"] else "GOOD"
+
+def plan_feedback_router(state: State):
+    return "REVISE" if state.get("plan_feedback") else "APPROVE"
 
 # ====================
 
@@ -193,16 +255,26 @@ graph = StateGraph(State)
 
 graph.add_node("goal_extractor", goal_extractor)
 graph.add_node("planning_agent", planing_agent)
+graph.add_node("plan_review", plan_review)
+graph.add_node("plan_reviser", plan_reviser)
 graph.add_node("coding_agent", coding_agnet)
 graph.add_node("code_runner", code_runner)
 graph.add_node("code_analyzer", code_analyzer)
+graph.add_node("human_review", human_review)
+graph.add_node("fix_planner", fix_planner)
+graph.add_node("fix_coding_agent", fix_coding_agent)
 
 graph.add_edge(START, "goal_extractor")
 graph.add_edge("goal_extractor", "planning_agent")
-graph.add_edge("planning_agent", "coding_agent")
+graph.add_edge("planning_agent", "plan_review")
+graph.add_conditional_edges("plan_review", plan_feedback_router, { "REVISE": "plan_reviser", "APPROVE": "coding_agent" })
+graph.add_edge("plan_reviser", "plan_review")
 graph.add_edge("coding_agent", "code_runner")
 graph.add_edge("code_runner", "code_analyzer")
-graph.add_conditional_edges("code_analyzer", code_analyzer_router, { "FIX": "coding_agent", "END": END })
+graph.add_conditional_edges("code_analyzer", code_analyzer_router, { "FIX": "fix_planner", "GOOD": "human_review" })
+graph.add_conditional_edges("human_review", code_analyzer_router, { "FIX": "fix_planner", "GOOD": END })
+graph.add_edge("fix_planner", "fix_coding_agent")
+graph.add_edge("fix_coding_agent", "code_runner")
 
 checkpointer = InMemorySaver()
 thread_id = str(uuid.uuid4())
@@ -210,12 +282,23 @@ config: RunnableConfig = {"run_name": "Masim Agent", "configurable": {"thread_id
 
 app = graph.compile(checkpointer=checkpointer).with_config(config=config)
 
-docker_prerequirements(build_image=False)
+if __name__ == "__main__":
+    with open("graph.png", "wb") as f:
+        f.write(app.get_graph().draw_mermaid_png())
 
-data = State(session_id=thread_id,messages=[HumanMessage("외계행성계 탐사 방법 중 시선속도를 이용해서 찾는 방법(도플러 효과 이용)을 애니메이션으로 보여줘.")], max_retry=3, retry=0) # type: ignore
+    docker_prerequirements(build_image=False)
 
-for event in app.stream(
-    data,
-    stream_mode="updates"
-):
-    logger.info(event)
+    data = State(session_id=thread_id,messages=[HumanMessage("원의 넓이 공식을 평행사변형을 이용해서 유도하는 애니메이션 제작")], max_retry=5, retry=0) # type: ignore
+
+    result = app.invoke(data)
+
+    while True:
+        q: list = result["__interrupt__"]
+
+        if len(q) == 0:
+            break
+        
+        i = q.pop(0)
+        res = Prompt.ask(i.value)
+
+        result = app.invoke(Command(resume=res))
