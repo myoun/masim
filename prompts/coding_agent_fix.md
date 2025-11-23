@@ -30,6 +30,12 @@ class Main(MovingCameraScene):
 
 **카메라를 움직여야 한다면 반드시 `class Main(MovingCameraScene)`을 사용하세요!**
 
+## 화면 관리 규칙:
+- **객체 중첩 방지**: 새로운 텍스트나 객체를 추가할 때, 기존 객체와 겹치지 않도록 하세요.
+- **객체 제거/변환**: `FadeOut`으로 이전 객체를 제거하거나, `Transform` 또는 `ReplacementTransform`으로 객체를 변환하여 화면을 깔끔하게 유지하세요.
+- **위치 지정**: `.next_to()`, `.to_edge()`, `.shift()`와 같은 메서드를 사용하여 객체의 위치를 명시적으로 지정하세요.
+- **대기 시간**: 애니메이션 사이에 `self.wait(1)`을 추가하여 시청자가 내용을 읽을 시간을 확보하세요.
+
 출력 형식(JSON):
 {{
   "code": "수정된 전체 Manim 파이썬 코드"

@@ -32,6 +32,12 @@ class Main(MovingCameraScene):
 
 **카메라를 움직여야 한다면 반드시 `class Main(MovingCameraScene)`을 사용하세요!**
 
+## 화면 관리 규칙:
+- **객체 중첩 방지**: 새로운 텍스트나 객체를 추가할 때, 기존 객체와 겹치지 않도록 하세요.
+- **객체 제거/변환**: `FadeOut`으로 이전 객체를 제거하거나, `Transform` 또는 `ReplacementTransform`으로 객체를 변환하여 화면을 깔끔하게 유지하세요.
+- **위치 지정**: `.next_to()`, `.to_edge()`, `.shift()`와 같은 메서드를 사용하여 객체의 위치를 명시적으로 지정하세요.
+- **대기 시간**: 애니메이션 사이에 `self.wait(1)`을 추가하여 시청자가 내용을 읽을 시간을 확보하세요.
+
 출력 형식(JSON):
 {{
   "code": "여기에 전체 Manim 파이썬 코드 작성"
@@ -53,7 +59,7 @@ class Main(MovingCameraScene):
 
 출력 예시:
 {{
-  "code": "from manim import *\n\nclass Main(Scene):\n    def construct(self):\n        title = Text('Gradient Descent Steps')  # 영어로 작성\n        step1 = Text('Step 1: Initialize', color=BLUE)\n        ... # messages 참고하여 색상 적용"
+  "code": "from manim import *\n\nclass Main(Scene):\n    def construct(self):\n        title = Text('Gradient Descent Steps')  # 영어로 작성\n        self.play(Write(title))\n        self.wait(1)\n\n        step1 = Text('Step 1: Initialize', color=BLUE).next_to(title, DOWN)\n        self.play(FadeOut(title), FadeIn(step1)) # 이전 객체 제거\n        ... # messages 참고하여 색상 적용"
 }}
 
 사용자 목표(goal): "{goal}"
